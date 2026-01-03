@@ -77,7 +77,7 @@ export const deleteCategory = asyncHandler(async(req, res) => {
 
         // loop through each item in the category
         for(const item of itemsWithCategory){
-            
+                
             //delete all sales records linked mszi specific Item
             //deleteMany   this is moongose method
             await Sale.deleteMany( { item: item_id});
@@ -91,18 +91,29 @@ export const deleteCategory = asyncHandler(async(req, res) => {
     res.json({ message: 'Category, Items and sales deleted'})
 })
 
+
+// After frontend   ????????
+
+
 export const getCategories = asyncHandler( async (req, res) => {
 
     const page = parseInt(req.query.page) || 1;
-    const pageLimit = parseInt( req.query.page) || 10;
+    //extract limit
+    //Item limit 
+    const itemLimit = parseInt( req.query.page) || 10;
+    //calculate how many page to skip for pagination
+    const skip = (page - 1) * itemLimit;
     const searchByBoth = req.query.search || '';
-    const skip = (page - 1) * pageLimit;
 
     try{
         //aggregation pipeline
         const pipeline = [
             // match stage for search
-            ...(search ? [{ 
+            // JavaScript spread operator with(...) ternary operator
+
+            //...(condition ? [arrayIfTrue] : [arrayIfFalse])
+             
+            ...(search ? [{   
                 //if search variable is true
                 $match: {
                     // match = where
@@ -113,43 +124,57 @@ export const getCategories = asyncHandler( async (req, res) => {
                     ]
                 }
             }] : []),
+            // If no search empty array, no stage added
 
             { 
-                //look up = join in SQL
+                //look up = join in SQL   looks up items belonging to each category
                 $lookup: {
-                    //collection in MongoDB is plural and lower cas
+                    //collection in MongoDB is plural and lower case
                     from: 'items',  // item collection ab database
                     localField: '_id',
-                    foreignField: 'category',
-                    as: 'items'
+                    foreignField: 'category',  //from items collection that reference to category
+                    as: 'items'   //output array field name containing matched items
                 }
             },
 
             // add itemscount field
+            //counts items per category using $size
             {
                 $addFields: {
-                    itemsCount: { $size: '$items'}
+                    itemsCount: { $size: '$items'}  // size operator to count items
                 }
             },
             //remove items array
+            // project stage, remove the items array to reduce response size
+            //we only need count
             { 
                 $project: {
-                    items: 0
+                    items: 0  // exclude this field from output
+                    // 
                 }
             },
+
+            //sort 
             {
                 $sort: {
-                    createdAt: -1
+                    createdAt: -1  // descending order
                 }
             }
         ];
         
-        // create count pipeline
+        // separate pipeline for counting total documents
+        //added count stage to get total number except pagination
         const countPipeline = [...pipeline, { $count: 'total'}];
+
+        //execute both queries in parallel for better performance
+        //runs count and data queries simultaneously
         const [ countResult, categories] = await Promise.all([
-            Category.aggregate(countPipeline),
-            Category.aggregate([...pipeline, { $skip: skip }, { $pageLimit: pageLimit}])
+            Category.aggregate(countPipeline),   //get total count
+
+            //get paginated data
+            Category.aggregate([...pipeline, { $skip: skip }, { $itemLimit: itemLimit}])  
         ]);
+        //extract total count from countResult, default 0
         const total = countResult.length > 0 ? countResult[0].total : 0;
 
         if(categories.length > 0) {
@@ -158,15 +183,16 @@ export const getCategories = asyncHandler( async (req, res) => {
             itemsCount: categories[0].itemsCount
             });
         }
+        //send JSON response with data and pagination data
         res.json({
-            categories,
-            pagination: {
+            categories,  // the actuall category data
+            pagination: {          //pagination data for frontend
                 currentPage: page,
-                totalPages: Math.ceil(total/pageLimit),    
-                totalItems: total,
-                itemsPerPage: pageLimit,
-                hasNextPage: page < Math.ceil(total/pageLimit),
-                hasPrevPage: page > 1
+                totalPages: Math.ceil(total/itemLimit),   //total number of pages 
+                totalItems: total,   // total number of items across all pages
+                itemsPerPage: itemLimit,   //numbers of items oer oage
+                hasNextPage: page < Math.ceil(total/itemLimit),   //boolean if next page exists
+                hasPrevPage: page > 1    //boolean if prev page exists
             }
         });
     } catch (error) {
