@@ -6,103 +6,135 @@ import Category from '../models/Category.js';
 // @desc    Get sales by item
 // @route   GET /api/reports/sales-by-item
 // @access  Private
+// Export controller function to get sales aggregated by individual items
 export const getSalesByItem = asyncHandler(async (req, res) => {
+  // Destructure query parameters from request URL
   const { startDate, endDate, category } = req.query;
   
-  // Build date filter
+  // STEP 1: BUILD DATE FILTER
+  // Initialize empty date filter object
   const dateFilter = {};
+  // Check if either startDate or endDate is provided
   if (startDate || endDate) {
+    // Create saleDate filter object
     dateFilter.saleDate = {};
+    // Add start date filter if provided (greater than or equal to)
     if (startDate) dateFilter.saleDate.$gte = new Date(startDate);
+    // Add end date filter if provided (less than or equal to)
     if (endDate) dateFilter.saleDate.$lte = new Date(endDate);
   }
 
-  // Build category filter
+  // STEP 2: BUILD CATEGORY FILTER
+  // Initialize empty category filter
   let categoryFilter = {};
+  // Check if category filter is provided
   if (category) {
-    // Find items in this category first
+    // Find all items belonging to the specified category
     const categoryItems = await Item.find({ category }).select('_id');
+    // Extract just the item IDs from the results
     const itemIds = categoryItems.map(item => item._id);
+    // Create filter to match sales where item ID is in the list
     categoryFilter = { item: { $in: itemIds } };
   }
 
+  // STEP 3: PERFORM AGGREGATION PIPELINE
+  // MongoDB aggregation to group sales by item and calculate statistics
   const salesByItem = await Sale.aggregate([
+    // STAGE 1: Match/Filters
+    // Filter sales based on date and category criteria
     {
       $match: {
-        ...dateFilter,
-        ...categoryFilter
+        ...dateFilter,        // Apply date range filter (if any)
+        ...categoryFilter     // Apply category filter (if any)
       }
     },
+    // STAGE 2: First Lookup - Join with items collection
+    // Get item details for each sale
     {
       $lookup: {
-        from: 'items',
-        localField: 'item',
-        foreignField: '_id',
-        as: 'itemDetails'
+        from: 'items',              // Collection to join from
+        localField: 'item',         // Field from Sale collection (item ID)
+        foreignField: '_id',        // Field from Item collection (_id)
+        as: 'itemDetails'           // Output array field name
       }
     },
+    // STAGE 3: Unwind itemDetails array
+    // Convert the array of item details into individual documents
     {
-      $unwind: '$itemDetails'
+      $unwind: '$itemDetails'       // Flatten itemDetails array
     },
+    // STAGE 4: Second Lookup - Join with categories collection
+    // Get category details for each item
     {
       $lookup: {
-        from: 'categories',
-        localField: 'itemDetails.category',
-        foreignField: '_id',
-        as: 'categoryDetails'
+        from: 'categories',         // Collection to join from
+        localField: 'itemDetails.category',  // Field from itemDetails (category ID)
+        foreignField: '_id',        // Field from Category collection (_id)
+        as: 'categoryDetails'       // Output array field name
       }
     },
+    // STAGE 5: Unwind categoryDetails array (optional)
+    // Convert array to object, preserving documents even if no category found
     {
       $unwind: {
-        path: '$categoryDetails',
-        preserveNullAndEmptyArrays: true
+        path: '$categoryDetails',   // Flatten categoryDetails array
+        preserveNullAndEmptyArrays: true  // Keep documents even if no category
       }
     },
+    // STAGE 6: Group by item
+    // Aggregate all sales data for each unique item
     {
       $group: {
-        _id: '$item',
-        itemName: { $first: '$itemDetails.name' },
-        categoryName: { $first: '$categoryDetails.name' },
-        totalQuantity: { $sum: '$quantity' },
-        totalRevenue: { $sum: '$totalAmount' },
-        averagePrice: { $avg: '$itemDetails.price' },
-        saleCount: { $sum: 1 }
+        _id: '$item',               // Group by item ID
+        itemName: { $first: '$itemDetails.name' },  // Get item name from first occurrence
+        categoryName: { $first: '$categoryDetails.name' },  // Get category name
+        totalQuantity: { $sum: '$quantity' },        // Sum all quantities sold
+        totalRevenue: { $sum: '$totalAmount' },      // Sum all revenue generated
+        averagePrice: { $avg: '$itemDetails.price' }, // Calculate average item price
+        saleCount: { $sum: 1 }      // Count number of sales transactions
       }
     },
+    // STAGE 7: Project/Transform output
+    // Format the output structure and calculations
     {
       $project: {
-        _id: 0,
-        itemId: '$_id',
-        itemName: 1,
-        categoryName: 1,
-        totalQuantity: 1,
-        totalRevenue: 1,
-        averagePrice: { $round: ['$averagePrice', 2] },
-        saleCount: 1
+        _id: 0,                     // Exclude the MongoDB _id field
+        itemId: '$_id',             // Rename _id to itemId
+        itemName: 1,                // Include itemName field
+        categoryName: 1,            // Include categoryName field
+        totalQuantity: 1,           // Include totalQuantity field
+        totalRevenue: 1,            // Include totalRevenue field
+        averagePrice: { $round: ['$averagePrice', 2] },  // Round average price to 2 decimals
+        saleCount: 1                // Include saleCount field
       }
     },
+    // STAGE 8: Sort results
+    // Order results by total revenue (highest first)
     {
-      $sort: { totalRevenue: -1 }
+      $sort: { totalRevenue: -1 }   // Sort descending by totalRevenue
     }
   ]);
 
-  // Calculate summary
+  // STEP 4: CALCULATE SUMMARY STATISTICS
+  // Compute overall totals from the aggregated item data
   const summary = {
-    totalItems: salesByItem.length,
-    totalQuantity: salesByItem.reduce((sum, item) => sum + item.totalQuantity, 0),
-    totalRevenue: salesByItem.reduce((sum, item) => sum + item.totalRevenue, 0),
+    totalItems: salesByItem.length,  // Count of unique items sold
+    totalQuantity: salesByItem.reduce((sum, item) => sum + item.totalQuantity, 0),  // Sum all quantities
+    totalRevenue: salesByItem.reduce((sum, item) => sum + item.totalRevenue, 0),    // Sum all revenue
     averageRevenuePerItem: salesByItem.length > 0 
       ? salesByItem.reduce((sum, item) => sum + item.totalRevenue, 0) / salesByItem.length 
-      : 0
+      : 0  // Calculate average revenue per item (avoid division by zero)
   };
 
+  // STEP 5: SEND RESPONSE
+  // Return JSON response with all computed data
   res.json({
-    salesByItem,
-    summary,
-    filters: {
-      startDate: startDate || 'All time',
-      endDate: endDate || 'All time',
-      category: category || 'All categories'
+    salesByItem,    // Array of sales data grouped by item
+    summary,        // Summary statistics object
+    filters: {      // Echo back the filters applied for reference
+      startDate: startDate || 'All time',          // Start date used or default text
+      endDate: endDate || 'All time',              // End date used or default text
+      category: category || 'All categories'       // Category used or default text
     }
   });
 });

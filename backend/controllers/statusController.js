@@ -3,31 +3,45 @@ import Category from "../models/Category";
 import Sale from "../models/Sale";
 import asyncHandler from "express-async-handler";
 
+//export dashboard statistics
 export const getDashboardStats = asyncHandler(async(req, res) => {
     try{
+        //count total items in inventory
         const totalItems = await Item.countDocuments();
+        //const categories in the system
         const totalCategories = await Category.countDocuments();
+        //count total sales transaction
         const totalSales = await Sale.countDocuments();
 
+        //find products with low quantity
         const lowQuantityProducts = await Item.find({ quantity: { $lt: 10}})
+        //select only name and qauntity
          .select('name quantity')
          .sort({ quantity: 1})
          .limit( 10);
 
+         //count how many low quantity products
          const lowQuantity = lowQuantityProducts.length;
+         //date filter for na lomeanti sales
          const today = new Date();
+         //set time to start of day, mid night
          today.setHours(0, 0, 0, 0);
 
+         //aggregate today's total sale amount
          const todaySaledata = await Sale.aggregate([
             {
+                //match sale from today
                 $match: { saleDate: { $gte: today }}},   // filter sales from today onward
             {
+                //group and sum amounts
                 $group: {
+                    //group all into single result
                 _id: null,
                 total: { $sum: 'totalAmount'}
             }},
          ]);
 
+         //get current year for monthly sales analysis
          const currentYear = new Date().getFullYear();
          const monthlySales = await Sale.aggregate([
             {
